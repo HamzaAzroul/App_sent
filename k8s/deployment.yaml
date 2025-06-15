@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentiment-app
+  namespace: sentiment-app 
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentiment-app
+  template:
+    metadata:
+      labels:
+        app: sentiment-app
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+    spec:
+      containers:
+        - name: sentiment-app
+          image: hamzaazroul/sentiment-app:latest
+          ports:
+            - containerPort: 8000

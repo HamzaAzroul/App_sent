@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: 'streamlit-app-metrics'
+    static_configs:
+      - targets: ['app:8000']
+  - job_name: 'custom_exporter'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['app:8001']
+
+      
