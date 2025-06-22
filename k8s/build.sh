@@ -1,100 +1,93 @@
 #!/bin/bash
-set -e
 
-echo "🧼 Nettoyage Docker : conteneurs, images, volumes, réseaux..."
+set -euo pipefail
 
-# Arrêt des conteneurs en cours
-if [ -n "$(docker ps -q)" ]; then
-  echo "🛑 Arrêt des conteneurs..."
-  docker stop $(docker ps -q)
-else
-  echo "✔️ Aucun conteneur en cours."
-fi
+### 🔧 Variables
+APP_NAME="sentiment-app"
+DOCKER_USERNAME="hamzaazroul"
+IMAGE_TAG="latest"
+APP_DIR="./APP_SENT2"
+GRAFANA_PORT=3000
+PROM_PORT=9090
+APP_PORT=8000
+NETWORK_NAME="sentiment-net"
 
-# Suppression des conteneurs arrêtés
-if [ -n "$(docker ps -a -q)" ]; then
-  echo "🗑️ Suppression des conteneurs arrêtés..."
-  docker rm $(docker ps -a -q)
-fi
+### 🎨 Couleurs
+GREEN="\033[0;32m"
+YELLOW="\033[1;33m"
+BLUE="\033[1;34m"
+RESET="\033[0m"
 
-# Suppression ciblée des images liées à l’app
-echo "🖼️ Suppression des images Docker personnalisées..."
-docker images "hamzaazroul/*" -q | xargs -r docker rmi -f
+log() { echo -e "${BLUE}➡ $1${RESET}"; }
+success() { echo -e "${GREEN}✔ $1${RESET}"; }
+warn() { echo -e "${YELLOW}⚠ $1${RESET}"; }
 
-# Nettoyage volumes, réseaux et cache
-docker container prune -f
-docker image prune -a -f
-docker volume prune -f
-docker network prune -f
-docker system prune -f
+### 🧼 Étape 1 : Nettoyage
+log "Nettoyage des anciens conteneurs..."
+docker rm -f $APP_NAME grafana prometheus postgres || true
+docker network rm $NETWORK_NAME || true
+success "Anciennes instances supprimées"
 
-echo "🔨 Construction des images Docker..."
-docker compose build
+### 🌐 Étape 2 : Création réseau
+log "Création d’un réseau Docker isolé : $NETWORK_NAME"
+docker network create $NETWORK_NAME
+success "Réseau Docker $NETWORK_NAME prêt"
 
-echo "📤 Pousser les images sur Docker Hub..."
+### 🛠️ Étape 3 : Build de l’image app
+log "Build de l’image $APP_NAME depuis $APP_DIR..."
+docker build -t $DOCKER_USERNAME/$APP_NAME:$IMAGE_TAG "$APP_DIR"
+success "Image construite : $DOCKER_USERNAME/$APP_NAME:$IMAGE_TAG"
 
-IMAGES=(
-  "hamzaazroul/sentiment-app:latest"
-)
+### 🐘 Étape 4 : Lancement PostgreSQL
+log "Lancement de PostgreSQL..."
+docker run -d \
+  --name postgres \
+  --network $NETWORK_NAME \
+  -e POSTGRES_USER=admin \
+  -e POSTGRES_PASSWORD=admin \
+  -e POSTGRES_DB=sentiment_db \
+  postgres:15
+success "PostgreSQL prêt sur le réseau $NETWORK_NAME"
 
-# for img in "${IMAGES[@]}"; do
-#   echo "📦 Push $img..."
-#   docker push "$img"
-# done
+### 🚀 Étape 5 : Lancement de l'application
+log "Lancement de l'application $APP_NAME..."
+docker run -d \
+  --name $APP_NAME \
+  --network $NETWORK_NAME \
+  -p $APP_PORT:$APP_PORT \
+  -e DB_HOST=postgres \
+  -e DB_USER=admin \
+  -e DB_PASSWORD=admin \
+  -e DB_NAME=sentiment_db \
+  $DOCKER_USERNAME/$APP_NAME:$IMAGE_TAG
+success "$APP_NAME accessible sur http://localhost:$APP_PORT"
 
-# ❌ COMMENTÉ : Docker Compose n'est pas utile ici, car Minikube/K8s va tout déployer
-# echo "🚀 Lancement des conteneurs en local..."
-# docker compose up -d
+### 📊 Étape 6 : Lancement Prometheus
+log "Lancement de Prometheus..."
+docker run -d \
+  --name prometheus \
+  --network $NETWORK_NAME \
+  -p $PROM_PORT:9090 \
+  -v "$(pwd)/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml" \
+  prom/prometheus
+success "Prometheus accessible sur http://localhost:$PROM_PORT"
 
-echo "♻️ Redémarrage du cluster Minikube..."
-minikube delete || echo "✅ Aucun cluster Minikube existant."
+### 📈 Étape 7 : Lancement Grafana
+log "Lancement de Grafana..."
+docker run -d \
+  --name grafana \
+  --network $NETWORK_NAME \
+  -p $GRAFANA_PORT:3000 \
+  -e "GF_SECURITY_ADMIN_PASSWORD=admin" \
+  grafana/grafana
+success "Grafana accessible sur http://localhost:$GRAFANA_PORT"
 
-minikube start --driver=docker --addons=metrics-server --v=4 --alsologtostderr
-
-# ✅ Changement de contexte Docker vers Minikube (utile si tu build dans Minikube)
-eval $(minikube docker-env)
-
-echo "⏳ Attente de Minikube..."
-kubectl wait --for=condition=Ready nodes --all --timeout=120s
-
-echo "📁 Création des namespaces..."
-kubectl create namespace sentiment-app || echo "✅ Namespace 'sentiment-app' existe déjà"
-kubectl create namespace monitoring || echo "✅ Namespace 'monitoring' existe déjà"
-
-echo "📦 Déploiement des manifests Kubernetes..."
-kubectl apply -f .
-
-echo "📥 Ajout des dépôts Helm..."
-helm repo add grafana https://grafana.github.io/helm-charts
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm repo update
-
-echo "📈 Installation de Grafana via Helm..."
-helm install grafana grafana/grafana \
-  --namespace monitoring --create-namespace \
-  --set adminPassword='admin' \
-  --set service.type=NodePort \
-  --set persistence.enabled=false \
-  --set datasources."datasources\.yaml".apiVersion=1 \
-  --set datasources."datasources\.yaml".datasources[0].name=Prometheus \
-  --set datasources."datasources\.yaml".datasources[0].type=prometheus \
-  --set datasources."datasources\.yaml".datasources[0].url=http://prometheus-server.monitoring.svc.cluster.local \
-  --set datasources."datasources\.yaml".datasources[0].access=proxy \
-  --set datasources."datasources\.yaml".datasources[0].isDefault=true
-
-echo "📊 Installation de Prometheus via Helm..."
-helm install prometheus prometheus-community/prometheus \
-  --namespace monitoring --create-namespace
-
-#minikube service grafana -n monitoring
-
-echo "⏳ Attente que Grafana soit prêt..."
-kubectl wait --namespace monitoring \
-  --for=condition=ready pod \
-  --selector=app.kubernetes.io/name=grafana \
-  --timeout=180s || echo "⚠️ Grafana non prêt (vérifie avec kubectl get pods -n monitoring)"
-
-echo "🌐 Ouverture du dashboard Minikube..."
-minikube dashboard &
-
-echo "✅ Tout est prêt ! Application déployée, monitoring en place, et cluster fonctionnel."
+### ✅ Résumé final
+success "Déploiement local terminé ✅"
+echo ""
+echo -e "${GREEN}🌍 Application : http://localhost:$APP_PORT${RESET}"
+echo -e "${GREEN}📊 Grafana : http://localhost:$GRAFANA_PORT (admin/admin)${RESET}"
+echo -e "${GREEN}📈 Prometheus : http://localhost:$PROM_PORT${RESET}"
+echo -e "${GREEN}🐘 PostgreSQL : internal container on $NETWORK_NAME${RESET}"
+echo ""
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"

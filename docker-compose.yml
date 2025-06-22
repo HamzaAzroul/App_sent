@@ -10,6 +10,9 @@ services:
       - .:/app
     depends_on:
       - prometheus
+    networks:
+      - sentiment-net
+    restart: always
 
   prometheus:
     image: prom/prometheus
@@ -18,6 +21,9 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
     ports:
       - "9090:9090"
+    networks:
+    - sentiment-net
+    restart: always
 
   grafana:
     image: grafana/grafana
@@ -25,10 +31,23 @@ services:
     ports:
       - "3000:3000"
     environment:
+      - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
     volumes:
       - grafana-storage:/var/lib/grafana
+      - ./provisioning:/etc/grafana/provisioning
+      - ./dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - prometheus
+    networks:
+      - sentiment-net
+    restart: always
 
 volumes:
   grafana-storage:
+
+networks:
+  sentiment-net:
+    driver: bridge
+
   

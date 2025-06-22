@@ -1,0 +1,66 @@
+name: CI/CD Sentiment App
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      APP_NAME: sentiment-app
+      DOCKER_USERNAME: hamzaazroul
+      IMAGE_TAG: latest
+
+    steps:
+    - name: 📥 Checkout du code
+      uses: actions/checkout@v3
+
+    - name: 🔧 Setup Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: 🔑 Connexion DockerHub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: 📦 Build image Docker
+      run: |
+        docker build -t $DOCKER_USERNAME/$APP_NAME:$IMAGE_TAG .
+
+    - name: 📤 Push image vers Docker Hub
+      run: |
+        docker push $DOCKER_USERNAME/$APP_NAME:$IMAGE_TAG
+
+    - name: 📄 Setup Kubeconfig pour déploiement (si K8s distant)
+      if: ${{ secrets.KUBECONFIG_BASE64 != '' }}
+      run: |
+        echo "${{ secrets.KUBECONFIG_BASE64 }}" | base64 -d > $HOME/.kube/config
+
+    - name: 📡 Installation de kubectl et Helm
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.30.0'
+    - uses: azure/setup-helm@v3
+      with:
+        version: 'v3.14.0'
+
+    - name: 🚀 Déploiement K8s avec manifests
+      run: |
+        kubectl apply -k manifests/
+
+    - name: 📊 Déploiement Prometheus & Grafana via Helm (monitoring)
+      run: |
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        helm repo add grafana https://grafana.github.io/helm-charts
+        helm repo update
+        helm upgrade --install prometheus-operator prometheus-community/kube-prometheus-stack \
+          --namespace monitoring --create-namespace
+
+    - name: ✅ Vérification Pods
+      run: |
+        kubectl get pods -A
